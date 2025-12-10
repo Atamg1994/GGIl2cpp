@@ -2158,7 +2158,9 @@ local Searcher = {
             local _il2cpp = {}
             gg.setRanges(gg.REGION_CODE_APP)
             for k, v in ipairs(il2cpp) do
-                if (v.state == 'Xa') then
+                local Value = gg.getValues({{address = v.start, flags = 4}})[1].value
+                if Value==0x464C457F or Value==263434879 then
+         --       if (v.state == 'Xa') then
                     gg.searchNumber(':il2cpp', gg.TYPE_BYTE, false, gg.SIGN_EQUAL, v.start, v['end'])
                     if (gg.getResultsCount() > 0) then
                         _il2cpp[#_il2cpp + 1] = v
