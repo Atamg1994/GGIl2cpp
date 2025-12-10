@@ -2530,9 +2530,176 @@ local VersionEngine = {
             return 29
         end,
     },
+    Const_SemVer = {
+        ['2018_3'] = { major = 2018, minor = 3, patch = 0 },
+        ['2019_4_21'] = { major = 2019, minor = 4, patch = 21 },
+        ['2019_4_15'] = { major = 2019, minor = 4, patch = 15 },
+        ['2019_3_7'] = { major = 2019, minor = 3, patch = 7 },
+        ['2020_2_4'] = { major = 2020, minor = 2, patch = 4 },
+        ['2020_2'] = { major = 2020, minor = 2, patch = 0 },
+        ['2020_1_11'] = { major = 2020, minor = 1, patch = 11 },
+        ['2021_2'] = { major = 2021, minor = 2, patch = 0 },
+        ['2022_2'] = { major = 2022, minor = 2, patch = 0 },
+        ['2022_3_41'] = { major = 2022, minor = 3, patch = 41 },
+    },
+    
+    
+   compare_Versions  =  function(v1, v2)
+    if v1.major ~= v2.major then
+        return v1.major < v2.major and -1 or 1
+    end
+    if v1.minor ~= v2.minor then
+        return v1.minor < v2.minor and -1 or 1
+    end
+    if v1.patch ~= v2.patch then
+        return v1.patch < v2.patch and -1 or 1
+    end
+    return 0
+end,
+    ---@class YearMapping
+    ---Mapping of Unity release years to Il2Cpp versions with conditional logic
+    Y_ear = {
+        ---Get Il2Cpp version for Unity 2017
+        -- @param unityVersion table The Unity version table
+        -- @return number Il2Cpp version (24)
+        [2017] = function(VersionEngine, unityVersion)
+            return 24
+        end,
+        ---Get Il2Cpp version for Unity 2018
+        -- @param unityVersion table The Unity version table
+        -- @return number Il2Cpp version (24 or 24.1)
+        [2018] = function(VersionEngine, unityVersion)
+            return VersionEngine.compare_Versionsok(unityVersion, VersionEngine.Const_SemVer['2018_3']) >= 0 and 24.1 or 24
+        end,
+        ---Get Il2Cpp version for Unity 2019
+        -- @param unityVersion table The Unity version table
+        -- @return number Il2Cpp version (24.2 to 24.5)
+        [2019] = function(VersionEngine, unityVersion)
+            local version = 24.2
+            if VersionEngine.compare_Versionsok(unityVersion, VersionEngine.Const_SemVer['2019_4_21']) >= 0 then
+                version = 24.5
+            elseif VersionEngine.compare_Versionsok(unityVersion, VersionEngine.Const_SemVer['2019_4_15']) >= 0 then
+                version = 24.4
+            elseif VersionEngine.compare_Versionsok(unityVersion, VersionEngine.Const_SemVer['2019_3_7']) >= 0 then
+                version = 24.3
+            end
+            return version
+        end,
+        ---Get Il2Cpp version for Unity 2020
+        -- @param unityVersion table The Unity version table
+        -- @return number Il2Cpp version (24.3 to 27.1)
+        [2020] = function(VersionEngine, unityVersion)
+            local version = 24.3
+            if VersionEngine.compare_Versionsok(unityVersion, VersionEngine.Const_SemVer['2020_2_4']) >= 0 then
+                version = 27.1
+            elseif VersionEngine.compare_Versionsok(unityVersion, VersionEngine.Const_SemVer['2020_2']) >= 0 then
+                version = 27
+            elseif VersionEngine.compare_Versionsok(unityVersion, VersionEngine.Const_SemVer['2020_1_11']) >= 0 then
+                version = 24.4
+            end
+            return version
+        end,
+        ---Get Il2Cpp version for Unity 2021
+        -- @param unityVersion table The Unity version table
+        -- @return number Il2Cpp version (27.2 or 29)
+        [2021] = function(VersionEngine, unityVersion)
+            return VersionEngine.compare_Versionsok(unityVersion, VersionEngine.Const_SemVer['2021_2']) >= 0 and 29 or 27.2
+        end,
+        ---Get Il2Cpp version for Unity 2022
+        -- @param unityVersion table The Unity version table
+        -- @return number Il2Cpp version (29, 29.1 or 31)
+        [2022] = function(VersionEngine, unityVersion)
+            local version = 29
+            if VersionEngine.compare_Versionsok(unityVersion, VersionEngine.Const_SemVer['2022_3_41']) >= 0 then
+                version = 31
+            elseif VersionEngine.compare_Versionsok(unityVersion, VersionEngine.Const_SemVer['2022_2']) >= 0 then
+                version = 29.1
+            end
+            return version
+        end,
+        ---Get Il2Cpp version for Unity 2023
+        -- @param unityVersion table The Unity version table
+        -- @return number Il2Cpp version (30)
+        [2023] = function(VersionEngine, unityVersion)
+            return 31
+        end,
+    },
+    ReadUnityVersion_new = function()
+    local function findVersionInBinary(filePath)
+        local f = io.open(filePath, "rb")
+        if not f then return nil end
+        local content = f:read("*a")
+        f:close()
+
+        local versionPattern = "(%d%d%d%d)%.(%d+)%.(%d+)%a*" -- 2019.4.10f1
+        local major, minor, patch = content:match(versionPattern)
+        if major then
+            return { major = tonumber(major), minor = tonumber(minor), patch = tonumber(patch), name = major.."."..minor.."."..patch }
+        end
+        return nil
+    end
+
+    local version = nil
+
+    -- 1. Проверка libmain.so
+    local libs = gg.getRangesList("libmain.so")
+    for _, lib in ipairs(libs) do
+        version = findVersionInBinary(lib.name)
+        if version then
+            print("Found Unity version in libmain.so: " .. version.name)
+            break
+        end
+    end
+
+    local osUV = 0x11
+    if not version then
+        -- 2. Проверка C_ALLOC и JAVA_HEAP памяти
+        local memoryRegions = { gg.REGION_C_ALLOC, gg.REGION_JAVA_HEAP }
+        local searchStrings = { "Q 'X-Unity-Version:'", "Q 'SDK_UnityVersion'" }
+
+        for _, region in ipairs(memoryRegions) do
+            gg.setRanges(region)
+            gg.clearResults()
+            for _, s in ipairs(searchStrings) do
+                gg.searchNumber(s, gg.TYPE_BYTE, false, gg.SIGN_EQUAL, nil, nil, 1)
+                if gg.getResultsCount() > 0 then
+                    local addr = gg.getResults(1)[1].address
+                    osUV = (s == "Q 'SDK_UnityVersion'") and 0x20 or 0
+                    local versionStr = Il2cpp.Utf8ToString(addr + osUV)
+                    print(versionStr)
+                    local major, minor, patch = versionStr:match("(%d+)%.(%d+)%.(%d+)")
+                    if major then
+                        version = { major = tonumber(major), minor = tonumber(minor), patch = tonumber(patch), name = versionStr }
+                        break
+                    end
+                end
+            end
+            if version then break end
+        end
+    end
+
+    if not version then
+        -- 3. Последний шанс: ANONYMOUS память
+        gg.setRanges(gg.REGION_ANONYMOUS)
+        gg.clearResults()
+        gg.searchNumber("00h;32h;30h;0~~0;0~~0;2Eh;0~~0;2Eh::9", gg.TYPE_BYTE, false, gg.SIGN_EQUAL, nil, nil, 1)
+        if gg.getResultsCount() > 0 then
+            local addr = gg.getResults(3)[3].address
+            local versionStr = Il2cpp.Utf8ToString(addr)
+                  print(versionStr)
+              local major, minor, patch = versionStr:match("(%d+)%.(%d+)%.(%d+)")
+            if major then
+                version = { major = tonumber(major), minor = tonumber(minor), patch = tonumber(patch), name = versionStr }
+            end
+        end
+    end
+
+    return version
+end,
     ---@return number
     GetUnityVersion = function()
         gg.setRanges(gg.REGION_ANONYMOUS)
+        --gg.setRanges(gg.REGION_ANONYMOUS | gg.REGION_C_HEAP | gg.REGION_OTHER)
         gg.clearResults()
         gg.searchNumber("00h;32h;30h;0~~0;0~~0;2Eh;0~~0;2Eh::9", gg.TYPE_BYTE, false, gg.SIGN_EQUAL, nil, nil, 1)
         local result = gg.getResultsCount() > 0 and gg.getResults(3)[3].address or 0
@@ -2541,6 +2708,7 @@ local VersionEngine = {
     end,
     ReadUnityVersion = function(versionAddress)
         local verisonName = Il2cpp.Utf8ToString(versionAddress)
+        print(verisonName)
         return string.gmatch(verisonName, "(%d+)%p(%d+)%p(%d+)")()
     end,
     ---@param self VersionEngine
@@ -2561,6 +2729,25 @@ local VersionEngine = {
             end
             
         end
+           if not version then
+            local unityVersion = VersionEngine.ReadUnityVersion_new()
+            if not unityVersion then
+                gg.alert("Cannot determine Unity version", "", "")
+                version = 31
+            else
+                version = VersionEngine.Y_ear[unityVersion.major] or 31
+                if type(version) == 'function' then
+                    version = version(VersionEngine, unityVersion)
+                end
+            end
+        end
+       -- gg.alert("Not support this il2cpp version", tostring(Version), "")
+        if version > 29 then
+            gg.alert("Not support this il2cpp version" .. tostring(version), "critical use ", "v29")
+            version = 29
+        end
+    
+    
 		Il2cpp.Version=version
         ---@type Il2cppApi
         local api = assert(Il2CppConst[version], 'Not support this il2cpp version')
