@@ -2091,18 +2091,32 @@ local Searcher = {
     searchWord = ":EnsureCapacity",
 
     ---@param self Searcher
-    FindGlobalMetaData = function(self)
+        FindGlobalMetaData = function(self)
         gg.clearResults()
-        gg.setRanges(gg.REGION_C_HEAP | gg.REGION_C_ALLOC | gg.REGION_ANONYMOUS | gg.REGION_C_BSS | gg.REGION_C_DATA |
+        gg.setRanges(gg.REGION_C_ALLOC | gg.REGION_ANONYMOUS |
                          gg.REGION_OTHER)
         local globalMetadata = gg.getRangesList('global-metadata.dat')
         if not self:IsValidData(globalMetadata) then
+            globalMetadata = gg.getRangesList("dev/zero")
+        end
+        if not self:IsValidData(globalMetadata) then
             globalMetadata = {}
-            gg.clearResults()
-            gg.searchNumber(self.searchWord, gg.TYPE_BYTE)
-            gg.refineNumber(self.searchWord:sub(1, 2), gg.TYPE_BYTE)
-            local EnsureCapacity = gg.getResults(gg.getResultsCount())
-            gg.clearResults()
+            for k, v in ipairs({
+                gg.REGION_C_ALLOC,
+                gg.REGION_ANONYMOUS,
+                gg.REGION_OTHER
+            }) do
+                gg.clearResults()
+                gg.setRanges(v)
+                gg.searchNumber(self.searchWord, gg.TYPE_BYTE, false, gg.SIGN_EQUAL, nil,
+                    nil, 1)
+                if gg.getResultsCount() > 0 then
+                    gg.refineNumber(self.searchWord:sub(1, 2), gg.TYPE_BYTE)
+                    EnsureCapacity = gg.getResults(gg.getResultsCount())
+                    gg.clearResults()
+                    break
+                end 
+            end
             for k, v in ipairs(gg.getRangesList()) do
                 if (v.state == 'Ca' or v.state == 'A' or v.state == 'Cd' or v.state == 'Cb' or v.state == 'Ch' or
                     v.state == 'O') then
@@ -2114,7 +2128,14 @@ local Searcher = {
                 end
             end
         end
-        return globalMetadata[1].start, globalMetadata[#globalMetadata]['end']
+        local value = -89056337
+        if gg.getValues({{address = globalMetadata[1].start, flags = 4}})[1].value ~= value then
+            gg.searchNumber(value, 4, false, gg.SIGN_EQUAL, globalMetadata[1].start, globalMetadata[#globalMetadata]['end'])
+            if gg.getResultsCount() > 0 then
+                globalMetadata[1].start = gg.getResults(1)[1].address
+            end
+        end
+        return type(globalMetadata) == "table" and globalMetadata[1].start, globalMetadata[#globalMetadata]['end'] or 0, 0
     end,
 
     ---@param self Searcher
@@ -2149,43 +2170,267 @@ local Searcher = {
         else
             local _il2cpp = {}
             for k,v in ipairs(il2cpp) do
-                if (string.find(v.type, "..x.") or v.state == "Xa") then
+                local Value = gg.getValues({{address = v.start, flags = 4}})[1].value
+                if Value==0x464C457F or Value==263434879 then
+                --if (string.find(v.type, "..x.") or v.state == "Xa") then
                     _il2cpp[#_il2cpp + 1] = v
                 end
             end
-            il2cpp = _il2cpp
+            il2cpp[1] = _il2cpp[#_il2cpp]
+            --il2cpp = _il2cpp
         end       
         return il2cpp[1].start, il2cpp[#il2cpp]['end']
     end,
 
-    Il2CppMetadataRegistration = function()
-        gg.clearResults()
-        gg.setRanges(gg.REGION_C_HEAP | gg.REGION_C_ALLOC | gg.REGION_ANONYMOUS | gg.REGION_C_BSS | gg.REGION_C_DATA |
-                         gg.REGION_OTHER)
-        gg.loadResults({{
-            address = Il2cpp.globalMetadataStart,
-            flags = Il2cpp.MainType
-        }})
-        gg.searchPointer(0)
-        if gg.getResultsCount() == 0 and AndroidInfo.platform and AndroidInfo.sdk >= 30 then
-            gg.searchNumber(tostring(Il2cpp.globalMetadataStart | 0xB400000000000000), Il2cpp.MainType)
+    Il2CppSearchPointer = function(config)--address, ranges, endResults, startAddrs, endAddrs)
+        local ranges = config.ranges or {gg.REGION_C_BSS, gg.REGION_ANONYMOUS, gg.REGION_OTHER}
+        for i, range in ipairs(ranges) do 
+            gg.clearResults();
+    	    gg.setRanges(range);
+    	    gg.searchNumber(config.address, Il2cpp.MainType, nil, nil, config.startAddrs, config.endAddrs, config.endResults);
+    	    
+    	    -- Handle 64-bit Android SDK 30+ special case
+    	    if gg.getResultsCount() == 0 and AndroidInfo.platform and AndroidInfo.sdk >= 30 then
+                gg.searchNumber(tostring(config.address | 0xB400000000000000), Il2cpp.MainType, nil, nil, config.startAddrs, config.endAddrs, config.endResults);
+            end
+            
+            local t = gg.getResults(gg.getResultsCount())
+            gg.clearResults();
+            if #t > 0 then
+                return t
+            end
         end
-        if gg.getResultsCount() > 0 then
-            local GlobalMetadataPointers, s_GlobalMetadata = gg.getResults(gg.getResultsCount()), 0
-            for i = 1, #GlobalMetadataPointers do
-                if i ~= 1 then
-                    local difference = GlobalMetadataPointers[i].address - GlobalMetadataPointers[i - 1].address
-                    if (difference == Il2cpp.pointSize) then
-                        s_GlobalMetadata = Il2cpp.FixValue(gg.getValues({{
-                            address = GlobalMetadataPointers[i].address - (AndroidInfo.platform and 0x10 or 0x8),
-                            flags = Il2cpp.MainType
-                        }})[1].value)
-                    end
+    end,
+
+    ---Locate and initialize Il2Cpp metadata registration structures
+    -- @return table Table containing metadata registration information
+    Il2CppMetadataRegistration = function(self)
+        ---Check if an address points to a valid image name
+        -- @param addr number Memory address to check
+        -- @return string|boolean Image name if valid, false otherwise
+        local function isImage(addr)
+            local imageStr = Il2cpp.Utf8ToString(Il2cpp.GetPtr(addr))
+            local check = string.find(imageStr, ".-%.dll") or string.find(imageStr, "__Generated")
+            return check and imageStr
+        end
+        
+        -- Set pointer sizes based on version and platform
+        Il2cpp.classPointer = Il2cpp.Version < 27 and (AndroidInfo.platform and 24 or 12) or (AndroidInfo.platform and 40 or 20);
+        --Il2cpp.imagePointer = Il2cpp.Version < 27 and (AndroidInfo.platform and 72 or 36) or (AndroidInfo.platform and 24 or 12);
+        
+        -- Get global metadata range
+        local gmt = gg.getRangesList("global-metadata.dat");
+	    local addrs = ((gmt and #gmt > 0) and gmt[1].start) or Il2cpp.Meta.metaStart
+	    
+        --[[
+        gg.clearResults();
+	    gg.setRanges(gg.REGION_C_BSS | gg.REGION_ANONYMOUS | gg.REGION_OTHER);
+	    gg.searchNumber(gmt, Il2cpp.MainType, nil, nil, Il2cpp.il2cppStart, -1, 1);
+	    if gg.getResultsCount() == 0 and AndroidInfo.platform and AndroidInfo.sdk >= 30 then
+            gg.searchNumber(tostring(gmt | 0xB400000000000000), Il2cpp.MainType, nil, nil, Il2cpp.il2cppStart, -1, 1);
+        end
+        local t = gg.getResults(1)
+        gg.clearResults();
+        ]]
+        local startAddrs = Il2cpp.il2cppStart
+	    local config = {
+	        address = addrs,
+	        ranges = {gg.REGION_C_BSS, gg.REGION_ANONYMOUS, gg.REGION_OTHER},
+	        endResults = 1,
+	        startAddrs = startAddrs
+	    }
+	    local t = self.Il2CppSearchPointer(config)
+	    if not t then
+	        config.startAddrs = nil
+	        t = self.Il2CppSearchPointer(config)
+	        if not t then
+	            error("Il2CppSearchPointer :", config)
+	        end
+	    end
+	    
+	    Il2cpp.metaPtr = t[1].address
+	    
+	    local i = 1
+	    while true do 
+	        local addr = Il2cpp.metaPtr - (i * Il2cpp.pointSize)
+	        local pMetaReg = Il2cpp.Il2CppMetadataRegistration(Il2cpp.GetPtr(addr))
+	        local Range = gg.getValuesRange({{address = Il2cpp.GetPtr(addr)}})[1]
+            if (Range == "Cd" or Range == "O" or Range == "A") and pMetaReg.typeDefinitionsSizesCount == pMetaReg.fieldOffsetsCount then
+                Il2cpp.metaReg = Il2cpp.GetPtr(addr)
+                Il2cpp.il2cppReg = Il2cpp.GetPtr(addr + Il2cpp.pointSize)
+                break
+            end 
+            i = i + 1
+        end
+        --Il2cpp.Il2CppMetadataRegistration(Il2cpp.metaReg):AddList()
+        --Il2cpp.Il2CppCodeRegistration(Il2cpp.il2cppReg):AddList()
+        --[[os.exit()
+        local Range, a = {}, t[1].address - (10 * Il2cpp.pointSize)
+        for i = 1, 20 do
+            Range[i] = {address = a + (i * Il2cpp.pointSize), flags = Il2cpp.MainType}
+        end
+        local res = {}
+        for i, v in ipairs(gg.getValues(Range)) do
+            local addr = Il2cpp.FixValue(v.value)
+            if addr ~= gmt then
+                res[#res+1] = {address = addr, value = v.address}
+            end
+        end
+        for i, v in ipairs(gg.getValuesRange(res)) do
+            if v == "Cd" or v == "O" then
+                local metaRegIndex = i + 1
+                local il2cppRegIndex = i
+                local pMetaReg = Il2cpp.Il2CppMetadataRegistration(res[metaRegIndex].address)
+                if pMetaReg.typeDefinitionsSizesCount ~= pMetaReg.fieldOffsetsCount then
+                    metaRegIndex = i
+                    il2cppRegIndex = i+1
+                end
+                Il2cpp.il2cppReg = Il2cpp.il2cppReg or res[il2cppRegIndex].address
+                Il2cpp.il2cppRegPtr = res[il2cppRegIndex].value
+                Il2cpp.metaReg = Il2cpp.metaReg or res[metaRegIndex].address
+                Il2cpp.metaRegPtr = res[metaRegIndex].value
+                break
+            end
+        end
+        ]]
+        
+        --[[
+        local typeDef
+        for i = 0, 20 do
+            local addrs = Il2cpp.GetPtr(Il2cpp.metaPtr + (i * Il2cpp.pointSize))
+            if addrs > 0 then
+                local kls = {}
+                for key = 0, 10 do
+                   local klass = Il2cpp.GetPtr(addrs + (key * Il2cpp.pointSize))
+                   if isImage(Il2cpp.GetPtr(klass)) then
+                       kls[#kls+1] = {address = klass, flags = Il2cpp.MainType}
+                   end
+                end
+                if #kls >= 5 then
+                    typeDef = addrs
                 end
             end
-            return s_GlobalMetadata
+        end 
+        ]]
+        Il2cpp.pMetadataRegistration = Il2cpp.Il2CppMetadataRegistration(Il2cpp.metaReg)
+        Il2cpp.pCodeRegistration = Il2cpp.Il2CppCodeRegistration(Il2cpp.il2cppReg)
+        Il2cpp.typeCount = Il2cpp.pMetadataRegistration.typesCount
+        Il2cpp.typeSize = Il2cpp.Il2CppTypeDefinition:GetSize()
+        Il2cpp.stringDef = Il2cpp.Meta.Header.stringOffset
+        
+        local i = 1
+        while true do 
+            local addrs = Il2cpp.GetPtr(Il2cpp.metaPtr + (i * Il2cpp.pointSize))
+            if not Il2cpp.imageCount and addrs < 1000 then 
+                Il2cpp.imageCount = addrs 
+            end
+            
+            if not Il2cpp.typeDef then 
+                local klass = Il2cpp.GetPtr(addrs)
+                if isImage(Il2cpp.GetPtr(klass)) then
+                    Il2cpp.typeDef = addrs
+                end
+            end 
+            if Il2cpp.typeDef then
+                local klass = Il2cpp.GetPtr(Il2cpp.typeDef)
+                if Il2cpp.Meta.Obf then
+                    local klass1 = Il2cpp.Class(klass)
+                    local klass2 = Il2cpp.Class(Il2cpp.GetPtr(Il2cpp.typeDef + Il2cpp.pointSize))
+                    local klassEnd = Il2cpp.Class(Il2cpp.GetPtr(Il2cpp.typeDef + ((Il2cpp.pMetadataRegistration.fieldOffsetsCount - 1) * Il2cpp.pointSize)))
+                    
+                    --Il2cpp.typeSize = klass2:GetTypeDef() - klass1:GetTypeDef()
+                    Il2cpp.Meta.Header.typeDefinitionsOffset = klass1:GetTypeDef()
+                    Il2cpp.Meta.Header.typeDefinitionsSize = (klassEnd:GetTypeDef() + Il2cpp.typeSize) - Il2cpp.Meta.Header.typeDefinitionsOffset
+                 end
+                if not Il2cpp.imageDef then
+                    local imageAddrs = Il2cpp.GetPtr(Il2cpp.GetPtr(Il2cpp.typeDef))
+                    if isImage(imageAddrs) then
+                        Il2cpp.imageDef = imageAddrs
+                    end
+                end
+                Il2cpp.Meta.regionClass = self.ranges[gg.getValuesRange({{address = klass}})[1]]
+            end 
+            if Il2cpp.imageDef and not Il2cpp.imageSize then
+                local addr = Il2cpp.imageDef + (i * Il2cpp.pointSize)
+                if isImage(addr) then
+                    Il2cpp.imageSize = addr - Il2cpp.imageDef
+                end
+            end
+            if Il2cpp.imageDef and Il2cpp.imageCount and Il2cpp.imageSize and Il2cpp.typeDef then
+                if not Il2cpp.Utf8ToString(Il2cpp.stringDef, 100):find(".dll") then
+                    local stringDef = Il2cpp.GetPtr(Il2cpp.imageDef)
+                    if Il2cpp.Utf8ToString(stringDef, 100):find(".dll") then
+                        local stringDef = Il2cpp.GetPtr(Il2cpp.GetPtr(Il2cpp.imageDef + (AndroidInfo.platform and 0x10 or 0x8)) + (AndroidInfo.platform and 0x18 or 0x10))
+                        Il2cpp.stringDef = stringDef
+                    else 
+                        error("stringDef not found: ", stringDef, Il2cpp.Meta.Header)
+                    end
+                end
+                break
+            end
+            i = i + 1
         end
-        return 0
+        
+        if Il2cpp.Meta.Obf then
+            local param = Il2cpp.Il2CppParameterDefinition(Il2cpp.Meta.Header.parametersOffset)
+            if param.token ~= self.tokenParam then
+                gg.clearResults();
+    	        gg.setRanges(-1);
+    	        gg.searchNumber(self.tokenParam, 4, nil, nil, t[1].value, -1, 1);
+    	        local r = gg.getResults(1)
+    	        gg.clearResults();
+    	        Il2cpp.Meta.Header.parametersOffset = r[1].address - 4 
+    	    end
+	    end
+        
+        --[[
+        for i = 1, 100 do
+            if not Il2cpp.imageCount then
+                local count = Il2cpp.GetPtr(t[1].address + (i * Il2cpp.pointSize))
+                if count < 1000 then
+                    Il2cpp.imageCount = count
+                end
+            end
+            if not Il2cpp.imageDef then
+                local addr = Il2cpp.GetPtr(Il2cpp.GetPtr(Il2cpp.typeDef + (i * Il2cpp.pointSize)))
+                local image = isImage(addr)
+                if image then
+                    Il2cpp.imageDef = addr
+                end
+            end
+            if Il2cpp.imageDef then
+                local addr = Il2cpp.imageDef + (i * Il2cpp.pointSize)
+                if isImage(addr) then
+                    Il2cpp.imageSize = addr - Il2cpp.imageDef
+                    break
+                end
+            end
+        end
+        ]]
+        
+        --[[
+        local typeDefList = {}
+        for i = 0, Il2cpp.pMetadataRegistration.fieldOffsetsCount - 1 do 
+            typeDefList[i] = {address = Il2cpp.typeDef + (i * Il2cpp.pointSize), flags = Il2cpp.MainType}
+        end 
+        gg.loadResults({{address = Il2cpp.typeDef + ((Il2cpp.pMetadataRegistration.fieldOffsetsCount - 1) * Il2cpp.pointSize), flags = Il2cpp.MainType}})
+        ]]
+        
+        --print(Il2cpp.typeDefSize, Il2cpp.typeDefSizes, Il2cpp.typeDefOffset)
+        --os.exit()
+        
+        
+        
+        
+        --[[
+        if (Il2cpp.Version < 27) then
+            Il2cpp.stringDef = Il2cpp.FixValue(Il2cpp.GetPtr(Il2cpp.imageDef + ((AndroidInfo.platform and 8) or 0)));
+            return
+        else
+            address = Il2cpp.GetPtr(Il2cpp.GetPtr(Il2cpp.imageDef) + (AndroidInfo.platform and 16 or 8)) + (AndroidInfo.platform and 24 or 16);
+        end
+        Il2cpp.stringDef = Il2cpp.GetPtr(address);
+        ]]
     end
 }
 
