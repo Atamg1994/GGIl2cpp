@@ -2561,6 +2561,7 @@ local VersionEngine = {
             end
             
         end
+		Il2cpp.Version=version
         ---@type Il2cppApi
         local api = assert(Il2CppConst[version], 'Not support this il2cpp version')
         Il2cpp.FieldApi.Offset = api.FieldApiOffset
