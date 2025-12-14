@@ -1249,11 +1249,11 @@ local ClassApi = {
     ---@param self ClassApi
     ---@param class ClassConfig
     ---@return ClassInfo[] | ErrorSearch
-    Find = function(self, class)
-        local searchResult = Il2cppMemory:GetInformationOfClass(class.Class)
+    Find = function(self, _class_obj)
+        local searchResult = Il2cppMemory:GetInformationOfClass(_class_obj.Class)
         if (not searchResult) 
-            or ((class.FieldsDump or class.MethodsDump)
-                and (searchResult.config.FieldsDump ~= class.FieldsDump or searchResult.config.MethodsDump ~= class.MethodsDump))  
+            or ((_class_obj.FieldsDump or _class_obj.MethodsDump)
+                and (searchResult.config.FieldsDump ~= _class_obj.FieldsDump or searchResult.config.MethodsDump ~= _class_obj.MethodsDump))  
             then
             searchResult = {len = 0}
         end
@@ -1261,21 +1261,21 @@ local ClassApi = {
 
         ---@type ClassInfoRaw[] | ErrorSearch
         local ClassInfo =
-            (self.FindParamsCheck[type(class.Class)] or self.FindParamsCheck['default'])(self, class.Class, searchResult)
+            (self.FindParamsCheck[type(_class_obj.Class)] or self.FindParamsCheck['default'])(self, _class_obj.Class, searchResult)
         if searchResult.isNew then
             for k = 1, #ClassInfo do
                 ClassInfo[k] = self:UnpackClassInfo(ClassInfo[k], {
-                    FieldsDump = class.FieldsDump,
-                    MethodsDump = class.MethodsDump
+                    FieldsDump = _class_obj.FieldsDump,
+                    MethodsDump = _class_obj.MethodsDump
                 })
             end
             searchResult.config = {
-                Class = class.Class,
-                FieldsDump = class.FieldsDump,
-                MethodsDump = class.MethodsDump
+                Class = _class_obj.Class,
+                FieldsDump = _class_obj.FieldsDump,
+                MethodsDump = _class_obj.MethodsDump
             }
             searchResult.result = ClassInfo
-            Il2cppMemory:SetInformationOfClass(class.Class, searchResult)
+            Il2cppMemory:SetInformationOfClass(_class_obj.Class, searchResult)
         else
             ClassInfo = searchResult.result
         end
